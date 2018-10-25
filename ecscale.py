@@ -2,10 +2,10 @@ import boto3
 import datetime
 import os
 
-SCALE_IN_CPU_TH = os.environ['SCALE_IN_CPU_TH'] if os.environ['SCALE_IN_CPU_TH'] else 25
-SCALE_IN_MEM_TH = os.environ['SCALE_IN_MEM_TH'] if os.environ['SCALE_IN_MEM_TH'] else 75
-FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if os.environ['FUTURE_MEM_TH'] else 85
-ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if os.environ['ECS_AVOID_STR'] else 'awseb'
+SCALE_IN_CPU_TH = os.environ['SCALE_IN_CPU_TH'] if 'FUTURE_MEM_TH' in os.environ else 25
+SCALE_IN_MEM_TH = os.environ['SCALE_IN_MEM_TH'] if 'SCALE_IN_MEM_TH' in os.environ else 75
+FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if 'FUTURE_MEM_TH' in os.environ else 85
+ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if 'ECS_AVOID_STR' in os.environ else 'awseb'
 logline = {}
 
 def clusters(ecsClient):
@@ -294,7 +294,7 @@ def main(run='normal'):
         print logline
 
 def lambda_handler(event, context):
-    runType = 'dry' if os.environ['DRY_RUN'] else 'normal'
+    runType = 'dry' if 'DRY_RUN' in os.environ else 'normal'
     main(run=runType)
 
 
