@@ -1,12 +1,11 @@
 import boto3
 import datetime
-from optparse import OptionParser
 import os
 
-SCALE_IN_CPU_TH = 30
-SCALE_IN_MEM_TH = 60
-FUTURE_MEM_TH = 70
-ECS_AVOID_STR = 'awseb'
+SCALE_IN_CPU_TH = os.environ['SCALE_IN_CPU_TH'] if os.environ['SCALE_IN_CPU_TH'] else 25
+SCALE_IN_MEM_TH = os.environ['SCALE_IN_MEM_TH'] if os.environ['SCALE_IN_MEM_TH'] else 75
+FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if os.environ['FUTURE_MEM_TH'] else 85
+ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if os.environ['ECS_AVOID_STR'] else 'awseb'
 logline = {}
 
 def clusters(ecsClient):
@@ -46,8 +45,8 @@ def find_asg(clusterName, asgData):
     # Returns auto scaling group resourceId based on name
     for asg in asgData['AutoScalingGroups']:
         for tag in asg['Tags']:
-            if tag['Key'] == 'Name':
-                if tag['Value'].split(' ')[0] == clusterName:
+            if tag['Key'] == 'aws:cloudformation:stack-name':
+                if clusterName in tag['Value']:
                     return tag['ResourceId']
 
     else:
@@ -85,7 +84,6 @@ def asg_on_min_state(clusterName, asgData, asgClient):
 
 def empty_instances(clusterArn, activeContainerDescribed):
     # returns a object of empty instances in cluster
-    instances = []
     empty_instances = {}
 
     for inst in activeContainerDescribed['containerInstances']:
@@ -97,7 +95,6 @@ def empty_instances(clusterArn, activeContainerDescribed):
 
 def draining_instances(clusterArn, drainingContainerDescribed):
     # returns an object of draining instances in cluster
-    instances = []
     draining_instances = {} 
 
     for inst in drainingContainerDescribed['containerInstances']:
@@ -157,7 +154,7 @@ def running_tasks(instanceId, containerDescribed):
 def drain_instance(containerInstanceId, ecsClient, clusterArn):
     # put a given ec2 into draining state
     try:
-        response = ecsClient.update_container_instances_state(
+        ecsClient.update_container_instances_state(
             cluster=clusterArn,
             containerInstances=[containerInstanceId],
             status='DRAINING'
@@ -224,12 +221,12 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
 
 
 def logger(entry, action='log'):
-# print log as one-line json from cloudwatch integration
+    # print log as one-line json from cloudwatch integration
     if action == 'log':
         global logline
         logline.update(entry)
     elif action == 'print':
-        print logline 
+        print entry 
      
 
 def main(run='normal'):
@@ -250,7 +247,7 @@ def main(run='normal'):
             activeContainerDescribed = clusterData['activeContainerDescribed']
             drainingInstances = clusterData['drainingInstances']
             emptyInstances = clusterData['emptyInstances']
-        ########## Cluster scaling rules ###########
+            ########## Cluster scaling rules ###########
         
         if asg_on_min_state(clusterName, asgData, asgClient):
             print '{}: in Minimum state, skipping'.format(clusterName) 
@@ -258,9 +255,9 @@ def main(run='normal'):
 
         if (clusterMemReservation < FUTURE_MEM_TH and 
            future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH): 
-        # Future memory levels allow scale
+            # Future memory levels allow scale
             if emptyInstances.keys():
-            # There are empty instances                
+                # There are empty instances                
                 for instanceId, containerInstId in emptyInstances.iteritems():
                     if run == 'dry':
                         print 'Would have drained {}'.format(instanceId)  
@@ -269,7 +266,7 @@ def main(run='normal'):
                         drain_instance(containerInstId, ecsClient, cluster)
 
             if (clusterMemReservation < SCALE_IN_MEM_TH):
-            # Cluster mem reservation level requires scale
+                # Cluster mem reservation level requires scale
                 if (ec2_avg_cpu_utilization(clusterName, asgData, cwClient) < SCALE_IN_CPU_TH):
                     instanceToScale = scale_in_instance(cluster, activeContainerDescribed)['containerInstanceArn']
                     if run == 'dry':
@@ -282,7 +279,7 @@ def main(run='normal'):
                 
 
         if drainingInstances.keys():
-        # There are draining instsnces to terminate
+            # There are draining instsnces to terminate
             for instanceId, containerInstId in drainingInstances.iteritems():
                 if not running_tasks(instanceId, clusterData['drainingContainerDescribed']):
                     if run == 'dry':
@@ -294,21 +291,10 @@ def main(run='normal'):
                     print 'Draining instance not empty'
 
         print '***'
+        print logline
 
 def lambda_handler(event, context):
-    parser = OptionParser()
-    parser.add_option("-a", "--access-key", dest="AWS_ACCESS_KEY_ID", help="Provide AWS access key")
-    parser.add_option("-s", "--secret-key", dest="AWS_SECRET_ACCESS_KEY", help="Provide AWS secret key")
-    parser.add_option("-d", "--dry-run", action="store_true", dest="DRY_RUN", default=False, help="Dry run the process")
-    (options, args) = parser.parse_args()
-
-    if options.AWS_ACCESS_KEY_ID and options.AWS_SECRET_ACCESS_KEY:
-        os.environ['AWS_ACCESS_KEY_ID'] = options.AWS_ACCESS_KEY_ID
-        os.environ['AWS_SECRET_ACCESS_KEY'] = options.AWS_SECRET_ACCESS_KEY
-    elif options.AWS_ACCESS_KEY_ID or options.AWS_SECRET_ACCESS_KEY:
-        print 'AWS key or secret are missing'
-
-    runType = 'dry' if options.DRY_RUN else 'normal'
+    runType = 'dry' if os.environ['DRY_RUN'] else 'normal'
     main(run=runType)
 
 
