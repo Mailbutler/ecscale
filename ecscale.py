@@ -85,7 +85,7 @@ def asg_scalable_instance_count(clusterName, asgData, asgClient):
     asg = find_asg(clusterName, asgData)
     for sg in asgData['AutoScalingGroups']:
         if sg['AutoScalingGroupName'] == asg:
-            return sg['DesiredCapacity'] - sg['MinSize']:
+            return sg['DesiredCapacity'] - sg['MinSize']
     
     return 0 
 
@@ -262,7 +262,7 @@ def main(run='normal'):
             continue
         
         scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient)
-        print '{}: {} instances can be scaled'.format(clusterName, scalableCount)
+        print '{0}: {1} instances can be scaled'.format(clusterName, scalableCount)
 
         if (clusterMemReservation < FUTURE_MEM_TH and 
            future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH): 
