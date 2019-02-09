@@ -261,11 +261,11 @@ def main(run='normal'):
             print '{}: in Minimum state, skipping'.format(clusterName) 
             continue
         
-        scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient)
+        scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient) - len(drainingInstances)
         print '{0}: {1} instances can be scaled'.format(clusterName, scalableCount)
 
-        if (clusterMemReservation < FUTURE_MEM_TH and 
-           future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH): 
+        if (scalableCount > 0 and clusterMemReservation < FUTURE_MEM_TH and
+           future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH):
             # Future memory levels allow scale
             if emptyInstances.keys():
                 # There are empty instance
