@@ -13,7 +13,7 @@ def clusters(ecsClient):
     response = ecsClient.list_clusters()
     if not response['clusterArns']:
         print 'No ECS cluster found'
-        return 
+        return
 
     return [cluster for cluster in response['clusterArns'] if ECS_AVOID_STR not in cluster]
 
@@ -21,7 +21,7 @@ def clusters(ecsClient):
 def cluster_memory_reservation(cwClient, clusterName):
     # Return cluster mem reservation average per minute cloudwatch metric
     try:
-        response = cwClient.get_metric_statistics( 
+        response = cwClient.get_metric_statistics(
             Namespace='AWS/ECS',
             MetricName='MemoryReservation',
             Dimensions=[
@@ -55,7 +55,7 @@ def find_asg(clusterName, asgData):
 
 def ec2_avg_cpu_utilization(clusterName, asgData, cwclient):
     asg = find_asg(clusterName, asgData)
-    response = cwclient.get_metric_statistics( 
+    response = cwclient.get_metric_statistics(
         Namespace='AWS/EC2',
         MetricName='CPUUtilization',
         Dimensions=[
@@ -78,16 +78,16 @@ def asg_on_min_state(clusterName, asgData, asgClient):
         if sg['AutoScalingGroupName'] == asg:
             if sg['MinSize'] == sg['DesiredCapacity']:
                 return True
-    
+
     return False
-    
+
 def asg_scalable_instance_count(clusterName, asgData, asgClient):
     asg = find_asg(clusterName, asgData)
     for sg in asgData['AutoScalingGroups']:
         if sg['AutoScalingGroupName'] == asg:
             return sg['DesiredCapacity'] - sg['MinSize']
-    
-    return 0 
+
+    return 0
 
 
 def empty_instances(clusterArn, activeContainerDescribed):
@@ -103,7 +103,7 @@ def empty_instances(clusterArn, activeContainerDescribed):
 
 def draining_instances(clusterArn, drainingContainerDescribed):
     # returns an object of draining instances in cluster
-    draining_instances = {} 
+    draining_instances = {}
 
     for inst in drainingContainerDescribed['containerInstances']:
         draining_instances.update({inst['ec2InstanceId']: inst['containerInstanceArn']})
@@ -138,26 +138,26 @@ def scale_in_instance(clusterArn, activeContainerDescribed):
                     instanceToScale['id'] = inst['ec2InstanceId']
                     instanceToScale['running'] = inst['runningTasksCount']
                     instanceToScale['containerInstanceArn'] = inst['containerInstanceArn']
-                    
+
                 elif res['integerValue'] == instanceToScale['freemem']:
                     # Two instances with same free memory level, choose the one with less running tasks
                     if inst['runningTasksCount'] < instanceToScale['running']:
                         instanceToScale['freemem'] = res['integerValue']
                         instanceToScale['id'] = inst['ec2InstanceId']
-                        instanceToScale['running'] = inst['runningTasksCount'] 
+                        instanceToScale['running'] = inst['runningTasksCount']
                         instanceToScale['containerInstanceArn'] = inst['containerInstanceArn']
                 break
 
     logger({'Scale candidate': '{} with free {}'.format(instanceToScale['id'], instanceToScale['freemem'])})
     return instanceToScale
 
-    
+
 def running_tasks(instanceId, containerDescribed):
     # return a number of running tasks on a given ecs host
     for inst in containerDescribed['containerInstances']:
         if inst['ec2InstanceId'] == instanceId:
-            return int(inst['runningTasksCount']) + int(inst['pendingTasksCount']) 
-    
+            return int(inst['runningTasksCount']) + int(inst['pendingTasksCount'])
+
 
 def drain_instance(containerInstanceId, ecsClient, clusterArn):
     # put a given ec2 into draining state
@@ -201,28 +201,28 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
     print '*** {} ***'.format(clusterName)
     activeContainerInstances = ecsClient.list_container_instances(cluster=cluster, status='ACTIVE')
     clusterMemReservation = cluster_memory_reservation(cwClient, clusterName)
-    
+
     if activeContainerInstances['containerInstanceArns']:
         activeContainerDescribed = ecsClient.describe_container_instances(cluster=cluster, containerInstances=activeContainerInstances['containerInstanceArns'])
-    else: 
+    else:
         print 'No active instances in cluster'
-        return False 
+        return False
     drainingContainerInstances = ecsClient.list_container_instances(cluster=cluster, status='DRAINING')
-    if drainingContainerInstances['containerInstanceArns']: 
+    if drainingContainerInstances['containerInstanceArns']:
         drainingContainerDescribed = ecsClient.describe_container_instances(cluster=cluster, containerInstances=drainingContainerInstances['containerInstanceArns'])
         drainingInstances = draining_instances(cluster, drainingContainerDescribed)
     else:
         drainingInstances = {}
-        drainingContainerDescribed = [] 
+        drainingContainerDescribed = []
     emptyInstances = empty_instances(cluster, activeContainerDescribed)
 
-    dataObj = { 
+    dataObj = {
         'clusterName': clusterName,
         'clusterMemReservation': clusterMemReservation,
         'activeContainerDescribed': activeContainerDescribed,
         'drainingInstances': drainingInstances,
         'emptyInstances': emptyInstances,
-        'drainingContainerDescribed': drainingContainerDescribed        
+        'drainingContainerDescribed': drainingContainerDescribed
     }
 
     return dataObj
@@ -234,8 +234,8 @@ def logger(entry, action='log'):
         global logline
         logline.update(entry)
     elif action == 'print':
-        print entry 
-     
+        print entry
+
 
 def main(run='normal'):
     ecsClient = boto3.client('ecs')
@@ -256,11 +256,11 @@ def main(run='normal'):
             drainingInstances = clusterData['drainingInstances']
             emptyInstances = clusterData['emptyInstances']
             ########## Cluster scaling rules ###########
-        
+
         if asg_on_min_state(clusterName, asgData, asgClient):
-            print '{}: in Minimum state, skipping'.format(clusterName) 
+            print '{}: in Minimum state, skipping'.format(clusterName)
             continue
-        
+
         scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient) - len(drainingInstances)
         print '{0}: {1} instances can be scaled'.format(clusterName, scalableCount)
 
@@ -273,9 +273,9 @@ def main(run='normal'):
                     if scalableCount <= 0:
                         print 'Minimum state reached. Cannot scale another instance.'
                         continue
-                    
+
                     if run == 'dry':
-                        print 'Would have drained {}'.format(instanceId)  
+                        print 'Would have drained {}'.format(instanceId)
                     else:
                         print 'Draining empty instance {}'.format(instanceId)
                         drain_instance(containerInstId, ecsClient, cluster)
@@ -296,7 +296,7 @@ def main(run='normal'):
                         scalableCount -= 1
                 else:
                     print 'CPU higher than TH, cannot scale'
-                
+
 
         if drainingInstances.keys():
             # There are draining instances to terminate
@@ -319,6 +319,5 @@ def lambda_handler(event, context):
 
 
 if __name__ == '__main__':
-    # lambda_handler({}, '') 
+    # lambda_handler({}, '')
     main()
-    
