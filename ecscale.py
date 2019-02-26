@@ -2,9 +2,8 @@ import boto3
 import datetime
 import os
 
-SCALE_IN_CPU_TH = os.environ['SCALE_IN_CPU_TH'] if 'SCALE_IN_CPU_TH' in os.environ else 75
+SCALE_IN_CPU_TH = os.environ['SCALE_IN_CPU_TH'] if 'SCALE_IN_CPU_TH' in os.environ else 25
 SCALE_IN_MEM_TH = os.environ['SCALE_IN_MEM_TH'] if 'SCALE_IN_MEM_TH' in os.environ else 75
-FUTURE_CPU_TH = os.environ['FUTURE_CPU_TH'] if 'FUTURE_CPU_TH' in os.environ else 85
 FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if 'FUTURE_MEM_TH' in os.environ else 85
 ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if 'ECS_AVOID_STR' in os.environ else 'awseb'
 logline = {}
@@ -20,7 +19,7 @@ def clusters(ecsClient):
 
 
 def cluster_memory_reservation(cwClient, clusterName):
-    # Return cluster mem reservation average per 5 minutes cloudwatch metric
+    # Return cluster mem reservation average per minute cloudwatch metric
     try:
         response = cwClient.get_metric_statistics(
             Namespace='AWS/ECS',
@@ -41,28 +40,6 @@ def cluster_memory_reservation(cwClient, clusterName):
     except Exception:
         logger({'ClusterMemoryError': 'Could not retrieve mem reservation for {}'.format(clusterName)})
 
-def cluster_cpu_reservation(cwClient, clusterName):
-    # Return cluster cpu reservation average per 5 minutes cloudwatch metric
-    try:
-        response = cwClient.get_metric_statistics(
-            Namespace='AWS/ECS',
-            MetricName='CPUReservation',
-            Dimensions=[
-                {
-                    'Name': 'ClusterName',
-                    'Value': clusterName
-                },
-            ],
-            StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=300),
-            EndTime=datetime.datetime.utcnow(),
-            Period=300,
-            Statistics=['Average']
-        )
-        return response['Datapoints'][0]['Average']
-
-    except Exception:
-        logger({'ClusterCPUError': 'Could not retrieve cpu reservation for {}'.format(clusterName)})
-
 
 def find_asg(clusterName, asgData):
     # Returns auto scaling group resourceId based on name
@@ -74,6 +51,26 @@ def find_asg(clusterName, asgData):
 
     else:
         logger({'ASGError': 'Auto scaling group for {} not found'.format(clusterName)})
+
+
+def ec2_avg_cpu_utilization(clusterName, asgData, cwclient):
+    asg = find_asg(clusterName, asgData)
+    response = cwclient.get_metric_statistics(
+        Namespace='AWS/EC2',
+        MetricName='CPUUtilization',
+        Dimensions=[
+            {
+                'Name': 'AutoScalingGroupName',
+                'Value': asg
+            },
+        ],
+        StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=300),
+        EndTime=datetime.datetime.utcnow(),
+        Period=300,
+        Statistics=['Average']
+    )
+    return response['Datapoints'][0]['Average']
+
 
 def asg_on_min_state(clusterName, asgData, asgClient):
     asg = find_asg(clusterName, asgData)
@@ -175,16 +172,16 @@ def drain_instance(containerInstanceId, ecsClient, clusterArn):
         logger({'DrainingError': e})
 
 
-def future_reservation(activeContainerDescribed, clusterReservation):
+def future_reservation(activeContainerDescribed, clusterMemReservation):
     # If the cluster were to scale in an instance, calculate the effect on mem reservation
     # return cluster_mem_reserve*num_of_ec2 / num_of_ec2-1
     numOfEc2 = len(activeContainerDescribed['containerInstances'])
     if numOfEc2 > 1:
-        futureMem = (clusterReservation*numOfEc2) / (numOfEc2-1)
+        futureMem = (clusterMemReservation*numOfEc2) / (numOfEc2-1)
     else:
         return 100
 
-    print '*** Current: {} | Future : {}'.format(clusterReservation, futureMem)
+    print '*** Current: {} | Future : {}'.format(clusterMemReservation, futureMem)
 
     return futureMem
 
@@ -204,7 +201,6 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
     print '*** {} ***'.format(clusterName)
     activeContainerInstances = ecsClient.list_container_instances(cluster=cluster, status='ACTIVE')
     clusterMemReservation = cluster_memory_reservation(cwClient, clusterName)
-    clusterCpuReservation = cluster_cpu_reservation(cwClient, clusterName)
 
     if activeContainerInstances['containerInstanceArns']:
         activeContainerDescribed = ecsClient.describe_container_instances(cluster=cluster, containerInstances=activeContainerInstances['containerInstanceArns'])
@@ -223,7 +219,6 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
     dataObj = {
         'clusterName': clusterName,
         'clusterMemReservation': clusterMemReservation,
-        'clusterCpuReservation': clusterCpuReservation,
         'activeContainerDescribed': activeContainerDescribed,
         'drainingInstances': drainingInstances,
         'emptyInstances': emptyInstances,
@@ -257,7 +252,6 @@ def main(run='normal'):
         else:
             clusterName = clusterData['clusterName']
             clusterMemReservation = clusterData['clusterMemReservation']
-            clusterCpuReservation = clusterData['clusterCpuReservation']
             activeContainerDescribed = clusterData['activeContainerDescribed']
             drainingInstances = clusterData['drainingInstances']
             emptyInstances = clusterData['emptyInstances']
@@ -268,20 +262,17 @@ def main(run='normal'):
             continue
 
         scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient) - len(drainingInstances)
-        print '{0}: {1} instances could be scaled'.format(clusterName, scalableCount)
+        print '{0}: {1} instances can be scaled'.format(clusterName, scalableCount)
 
-        if (scalableCount > 0 and
-            clusterMemReservation < FUTURE_MEM_TH and
-            future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH and
-            clusterCpuReservation < FUTURE_CPU_TH and
-            future_reservation(activeContainerDescribed, clusterCpuReservation) < FUTURE_CPU_TH):
+        if (scalableCount > 0 and clusterMemReservation < FUTURE_MEM_TH and
+           future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH):
             # Future memory levels allow scale
             if emptyInstances.keys():
                 # There are empty instance
                 for instanceId, containerInstId in emptyInstances.iteritems():
                     if scalableCount <= 0:
                         print 'Minimum state reached. Cannot scale another instance.'
-                        break
+                        continue
 
                     if run == 'dry':
                         print 'Would have drained {}'.format(instanceId)
@@ -290,15 +281,21 @@ def main(run='normal'):
                         drain_instance(containerInstId, ecsClient, cluster)
                     scalableCount -= 1
 
-            elif (clusterMemReservation < SCALE_IN_MEM_TH and clusterCpuReservation < SCALE_IN_CPU_TH):
-                instanceToScale = scale_in_instance(cluster, activeContainerDescribed)['containerInstanceArn']
-                if run == 'dry':
-                    print 'Would have scaled {}'.format(instanceToScale)
+            if (clusterMemReservation < SCALE_IN_MEM_TH):
+                # Cluster mem reservation level requires scale
+                if (ec2_avg_cpu_utilization(clusterName, asgData, cwClient) < SCALE_IN_CPU_TH):
+                    if scalableCount <= 0:
+                        print 'Minimum state reached. Cannot scale another instance.'
+                    else:
+                        instanceToScale = scale_in_instance(cluster, activeContainerDescribed)['containerInstanceArn']
+                        if run == 'dry':
+                            print 'Would have scaled {}'.format(instanceToScale)
+                        else:
+                            print 'Draining least utilized instanced {}'.format(instanceToScale)
+                            drain_instance(instanceToScale, ecsClient, cluster)
+                        scalableCount -= 1
                 else:
-                    print 'Draining least utilized instanced {}'.format(instanceToScale)
-                    drain_instance(instanceToScale, ecsClient, cluster)
-        else:
-            print 'No instance meets scaling requirements. Try again later...'
+                    print 'CPU higher than TH, cannot scale'
 
 
         if drainingInstances.keys():
