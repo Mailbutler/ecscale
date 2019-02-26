@@ -19,7 +19,7 @@ def clusters(ecsClient):
 
 
 def cluster_memory_reservation(cwClient, clusterName):
-    # Return cluster mem reservation average per minute cloudwatch metric
+    # Return cluster mem reservation average per 5 minutes cloudwatch metric
     try:
         response = cwClient.get_metric_statistics(
             Namespace='AWS/ECS',
@@ -270,23 +270,21 @@ def main(run='normal'):
             if emptyInstances.keys():
                 # There are empty instance
                 for instanceId, containerInstId in emptyInstances.iteritems():
-                    if scalableCount <= 0:
-                        print 'Minimum state reached. Cannot scale another instance.'
-                        continue
-
-                    if run == 'dry':
-                        print 'Would have drained {}'.format(instanceId)
+                    if scalableCount > 0:
+                        if run == 'dry':
+                            print 'Would have drained {}'.format(instanceId)
+                        else:
+                            print 'Draining empty instance {}'.format(instanceId)
+                            drain_instance(containerInstId, ecsClient, cluster)
+                        scalableCount -= 1
                     else:
-                        print 'Draining empty instance {}'.format(instanceId)
-                        drain_instance(containerInstId, ecsClient, cluster)
-                    scalableCount -= 1
+                        print 'Minimum state reached. Cannot scale another instance.'
+                        break
 
             if (clusterMemReservation < SCALE_IN_MEM_TH):
                 # Cluster mem reservation level requires scale
                 if (ec2_avg_cpu_utilization(clusterName, asgData, cwClient) < SCALE_IN_CPU_TH):
-                    if scalableCount <= 0:
-                        print 'Minimum state reached. Cannot scale another instance.'
-                    else:
+                    if scalableCount > 0:
                         instanceToScale = scale_in_instance(cluster, activeContainerDescribed)['containerInstanceArn']
                         if run == 'dry':
                             print 'Would have scaled {}'.format(instanceToScale)
@@ -294,6 +292,8 @@ def main(run='normal'):
                             print 'Draining least utilized instanced {}'.format(instanceToScale)
                             drain_instance(instanceToScale, ecsClient, cluster)
                         scalableCount -= 1
+                    else:
+                        print 'Minimum state reached. Cannot scale another instance.'
                 else:
                     print 'CPU higher than TH, cannot scale'
 
