@@ -302,7 +302,9 @@ def main(run='normal'):
                 else:
                     print 'Minimum state reached. Cannot scale another instance.'
             else:
-                print 'No instance meets scaling requirements. Try again later...'
+                print 'Cluster does not meet scaling requirements. Try again later...'
+        else:
+            print 'Cluster does not meet scaling requirements. Try again later...'
 
 
         if drainingInstances.keys():
