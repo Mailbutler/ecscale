@@ -9,11 +9,12 @@ FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if 'FUTURE_MEM_TH' in os.environ els
 ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if 'ECS_AVOID_STR' in os.environ else 'awseb'
 logline = {}
 
+
 def clusters(ecsClient):
     # Returns an iterable list of cluster names
     response = ecsClient.list_clusters()
     if not response['clusterArns']:
-        print 'No ECS cluster found'
+        print('No ECS cluster found')
         return
 
     return [cluster for cluster in response['clusterArns'] if ECS_AVOID_STR not in cluster]
@@ -40,6 +41,7 @@ def cluster_memory_reservation(cwClient, clusterName):
 
     except Exception:
         logger({'ClusterMemoryError': 'Could not retrieve mem reservation for {}'.format(clusterName)})
+
 
 def cluster_cpu_reservation(cwClient, clusterName):
     # Return cluster cpu reservation average per 5 minutes cloudwatch metric
@@ -75,6 +77,7 @@ def find_asg(clusterName, asgData):
     else:
         logger({'ASGError': 'Auto scaling group for {} not found'.format(clusterName)})
 
+
 def asg_on_min_state(clusterName, asgData, asgClient):
     asg = find_asg(clusterName, asgData)
     for sg in asgData['AutoScalingGroups']:
@@ -83,6 +86,7 @@ def asg_on_min_state(clusterName, asgData, asgClient):
                 return True
 
     return False
+
 
 def asg_scalable_instance_count(clusterName, asgData, asgClient):
     asg = find_asg(clusterName, asgData)
@@ -184,7 +188,7 @@ def future_reservation(activeContainerDescribed, clusterReservation):
     else:
         return 100
 
-    print '*** Current: {} | Future : {}'.format(clusterReservation, futureRes)
+    print('*** Current: {} | Future : {}'.format(clusterReservation, futureRes))
 
     return futureRes
 
@@ -195,25 +199,27 @@ def asg_scaleable(asgData, clusterName):
         if group['AutoScalingGroupName'] == asg:
             return True if group['MinSize'] < group['DesiredCapacity'] else False
     else:
-        print 'Cannot find AutoScalingGroup to verify scaleability'
+        print('Cannot find AutoScalingGroup to verify scaleability')
         return False
 
 
 def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
     clusterName = cluster.split('/')[1]
-    print '*** {} ***'.format(clusterName)
+    print('*** {} ***'.format(clusterName))
     activeContainerInstances = ecsClient.list_container_instances(cluster=cluster, status='ACTIVE')
     clusterMemReservation = cluster_memory_reservation(cwClient, clusterName)
     clusterCpuReservation = cluster_cpu_reservation(cwClient, clusterName)
 
     if activeContainerInstances['containerInstanceArns']:
-        activeContainerDescribed = ecsClient.describe_container_instances(cluster=cluster, containerInstances=activeContainerInstances['containerInstanceArns'])
+        activeContainerDescribed = ecsClient.describe_container_instances(
+            cluster=cluster, containerInstances=activeContainerInstances['containerInstanceArns'])
     else:
-        print 'No active instances in cluster'
+        print('No active instances in cluster')
         return False
     drainingContainerInstances = ecsClient.list_container_instances(cluster=cluster, status='DRAINING')
     if drainingContainerInstances['containerInstanceArns']:
-        drainingContainerDescribed = ecsClient.describe_container_instances(cluster=cluster, containerInstances=drainingContainerInstances['containerInstanceArns'])
+        drainingContainerDescribed = ecsClient.describe_container_instances(
+            cluster=cluster, containerInstances=drainingContainerInstances['containerInstanceArns'])
         drainingInstances = draining_instances(cluster, drainingContainerDescribed)
     else:
         drainingInstances = {}
@@ -239,7 +245,7 @@ def logger(entry, action='log'):
         global logline
         logline.update(entry)
     elif action == 'print':
-        print entry
+        print(entry)
 
 
 def main(run='normal'):
@@ -264,63 +270,63 @@ def main(run='normal'):
             ########## Cluster scaling rules ###########
 
         if asg_on_min_state(clusterName, asgData, asgClient):
-            print '{}: in Minimum state, skipping'.format(clusterName)
+            print('{}: in Minimum state, skipping'.format(clusterName))
             continue
 
         scalableCount = asg_scalable_instance_count(clusterName, asgData, asgClient) - len(drainingInstances)
-        print '{0}: {1} instances could be scaled'.format(clusterName, scalableCount)
+        print('{0}: {1} instances could be scaled'.format(clusterName, scalableCount))
 
         if (scalableCount > 0 and
             clusterMemReservation < FUTURE_MEM_TH and
             future_reservation(activeContainerDescribed, clusterMemReservation) < FUTURE_MEM_TH and
             clusterCpuReservation < FUTURE_CPU_TH and
-            future_reservation(activeContainerDescribed, clusterCpuReservation) < FUTURE_CPU_TH):
+                future_reservation(activeContainerDescribed, clusterCpuReservation) < FUTURE_CPU_TH):
             # Future memory levels allow scale
             if emptyInstances.keys():
                 # There are empty instance
                 for instanceId, containerInstId in emptyInstances.iteritems():
                     if scalableCount > 0:
                         if run == 'dry':
-                            print 'Would have drained {}'.format(instanceId)
+                            print('Would have drained {}'.format(instanceId))
                         else:
-                            print 'Draining empty instance {}'.format(instanceId)
+                            print('Draining empty instance {}'.format(instanceId))
                             drain_instance(containerInstId, ecsClient, cluster)
                         scalableCount -= 1
                     else:
-                        print 'Minimum state reached. Cannot scale another instance.'
+                        print('Minimum state reached. Cannot scale another instance.')
                         break
 
             if (clusterMemReservation < SCALE_IN_MEM_TH and clusterCpuReservation < SCALE_IN_CPU_TH):
                 if scalableCount > 0:
                     instanceToScale = scale_in_instance(cluster, activeContainerDescribed)['containerInstanceArn']
                     if run == 'dry':
-                        print 'Would have scaled {}'.format(instanceToScale)
+                        print('Would have scaled {}'.format(instanceToScale))
                     else:
-                        print 'Draining least utilized instanced {}'.format(instanceToScale)
+                        print('Draining least utilized instanced {}'.format(instanceToScale))
                         drain_instance(instanceToScale, ecsClient, cluster)
                     scalableCount -= 1
                 else:
-                    print 'Minimum state reached. Cannot scale another instance.'
+                    print('Minimum state reached. Cannot scale another instance.')
             else:
-                print 'Cluster does not meet scaling requirements. Try again later...'
+                print('Cluster does not meet scaling requirements. Try again later...')
         else:
-            print 'Cluster does not meet scaling requirements. Try again later...'
-
+            print('Cluster does not meet scaling requirements. Try again later...')
 
         if drainingInstances.keys():
             # There are draining instances to terminate
             for instanceId, containerInstId in drainingInstances.iteritems():
                 if not running_tasks(instanceId, clusterData['drainingContainerDescribed']):
                     if run == 'dry':
-                        print 'Would have terminated {}'.format(instanceId)
+                        print('Would have terminated {}'.format(instanceId))
                     else:
-                        print 'Terminating draining instance with no containers {}'.format(instanceId)
+                        print('Terminating draining instance with no containers {}'.format(instanceId))
                         terminate_decrease(instanceId, asgClient)
                 else:
-                    print 'Draining instance not empty'
+                    print('Draining instance not empty')
 
-        print '***'
-        print logline
+        print('***')
+        print(logline)
+
 
 def lambda_handler(event, context):
     runType = 'dry' if 'DRY_RUN' in os.environ else 'normal'
