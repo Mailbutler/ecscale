@@ -284,7 +284,7 @@ def main(run='normal'):
             # Future memory levels allow scale
             if emptyInstances.keys():
                 # There are empty instance
-                for instanceId, containerInstId in emptyInstances.iteritems():
+                for instanceId, containerInstId in emptyInstances.items():
                     if scalableCount > 0:
                         if run == 'dry':
                             print('Would have drained {}'.format(instanceId))
@@ -314,7 +314,7 @@ def main(run='normal'):
 
         if drainingInstances.keys():
             # There are draining instances to terminate
-            for instanceId, containerInstId in drainingInstances.iteritems():
+            for instanceId, containerInstId in drainingInstances.items():
                 if not running_tasks(instanceId, clusterData['drainingContainerDescribed']):
                     if run == 'dry':
                         print('Would have terminated {}'.format(instanceId))
