@@ -69,10 +69,8 @@ def cluster_cpu_reservation(cwClient, clusterName):
 def find_asg(clusterName, asgData):
     # Returns auto scaling group resourceId based on name
     for asg in asgData['AutoScalingGroups']:
-        for tag in asg['Tags']:
-            if tag['Key'] == 'aws:cloudformation:stack-name':
-                if clusterName in tag['Value']:
-                    return tag['ResourceId']
+        if clusterName in asg['AutoScalingGroupName']:
+            return asg['AutoScalingGroupName']
 
     else:
         logger({'ASGError': 'Auto scaling group for {} not found'.format(clusterName)})
