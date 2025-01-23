@@ -21,7 +21,7 @@ def clusters(ecsClient):
 
 
 def cluster_memory_reservation(cwClient, clusterName):
-    # Return cluster mem reservation average per 5 minutes cloudwatch metric
+    # Return cluster mem reservation average per 15 minutes cloudwatch metric
     try:
         response = cwClient.get_metric_statistics(
             Namespace='AWS/ECS',
@@ -32,9 +32,9 @@ def cluster_memory_reservation(cwClient, clusterName):
                     'Value': clusterName
                 },
             ],
-            StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=300),
+            StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=900),
             EndTime=datetime.datetime.utcnow(),
-            Period=300,
+            Period=900,
             Statistics=['Average']
         )
         return response['Datapoints'][0]['Average']
@@ -44,7 +44,7 @@ def cluster_memory_reservation(cwClient, clusterName):
 
 
 def cluster_cpu_reservation(cwClient, clusterName):
-    # Return cluster cpu reservation average per 5 minutes cloudwatch metric
+    # Return cluster cpu reservation average per 15 minutes cloudwatch metric
     try:
         response = cwClient.get_metric_statistics(
             Namespace='AWS/ECS',
@@ -55,9 +55,9 @@ def cluster_cpu_reservation(cwClient, clusterName):
                     'Value': clusterName
                 },
             ],
-            StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=300),
+            StartTime=datetime.datetime.utcnow() - datetime.timedelta(seconds=900),
             EndTime=datetime.datetime.utcnow(),
-            Period=300,
+            Period=900,
             Statistics=['Average']
         )
         return response['Datapoints'][0]['Average']
