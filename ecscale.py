@@ -7,6 +7,8 @@ SCALE_IN_MEM_TH = os.environ['SCALE_IN_MEM_TH'] if 'SCALE_IN_MEM_TH' in os.envir
 FUTURE_CPU_TH = os.environ['FUTURE_CPU_TH'] if 'FUTURE_CPU_TH' in os.environ else 85
 FUTURE_MEM_TH = os.environ['FUTURE_MEM_TH'] if 'FUTURE_MEM_TH' in os.environ else 85
 ECS_AVOID_STR = os.environ['ECS_AVOID_STR'] if 'ECS_AVOID_STR' in os.environ else 'awseb'
+AGENT_DISCONNECT_GRACE_MINUTES = os.environ['AGENT_DISCONNECT_GRACE_MINUTES'] if 'AGENT_DISCONNECT_GRACE_MINUTES' in os.environ else 10
+AGENT_DISCONNECT_TAG = 'ecscale:agent-disconnected-since'
 logline = {}
 
 
@@ -116,6 +118,19 @@ def draining_instances(clusterArn, drainingContainerDescribed):
     return draining_instances
 
 
+def disconnected_instances(activeContainerDescribed):
+    # returns an object of ACTIVE instances whose ECS agent is not connected
+    # (distinct from draining/empty: these are still counted as capacity by
+    # ECS but cannot actually run or report on tasks)
+    disconnected_instances = {}
+
+    for inst in activeContainerDescribed['containerInstances']:
+        if not inst['agentConnected']:
+            disconnected_instances.update({inst['ec2InstanceId']: inst['containerInstanceArn']})
+
+    return disconnected_instances
+
+
 def terminate_decrease(instanceId, asgClient):
     # terminates an instance and decreases the desired number in its auto scaling group
     # [ only if desired > minimum ]
@@ -125,6 +140,58 @@ def terminate_decrease(instanceId, asgClient):
             ShouldDecrementDesiredCapacity=True
         )
         logger({'Action': 'Terminate', 'Message': response['Activity']['Cause']})
+
+    except Exception as e:
+        logger({'Error': e})
+
+
+def get_disconnect_since(ec2Client, instanceId):
+    # reads the timestamp (if any) an instance's agent was first seen disconnected
+    try:
+        response = ec2Client.describe_tags(Filters=[
+            {'Name': 'resource-id', 'Values': [instanceId]},
+            {'Name': 'key', 'Values': [AGENT_DISCONNECT_TAG]}
+        ])
+        if response['Tags']:
+            return datetime.datetime.fromisoformat(response['Tags'][0]['Value'])
+
+    except Exception as e:
+        logger({'TagReadError': e})
+
+    return None
+
+
+def mark_disconnected(ec2Client, instanceId):
+    # tags an instance with the time its agent was first seen disconnected
+    try:
+        ec2Client.create_tags(
+            Resources=[instanceId],
+            Tags=[{'Key': AGENT_DISCONNECT_TAG, 'Value': datetime.datetime.utcnow().isoformat()}]
+        )
+
+    except Exception as e:
+        logger({'TagWriteError': e})
+
+
+def clear_disconnect_tag(ec2Client, instanceId):
+    # clears the tag once an instance's agent has reconnected
+    try:
+        ec2Client.delete_tags(Resources=[instanceId], Tags=[{'Key': AGENT_DISCONNECT_TAG}])
+
+    except Exception as e:
+        logger({'TagClearError': e})
+
+
+def terminate_replace(instanceId, asgClient):
+    # terminates an instance WITHOUT decreasing the ASG's desired capacity,
+    # so it gets replaced rather than removed - for unhealthy instances,
+    # as opposed to terminate_decrease() which is used for scale-in
+    try:
+        response = asgClient.terminate_instance_in_auto_scaling_group(
+            InstanceId=instanceId,
+            ShouldDecrementDesiredCapacity=False
+        )
+        logger({'Action': 'Terminate-Replace', 'Message': response['Activity']['Cause']})
 
     except Exception as e:
         logger({'Error': e})
@@ -223,6 +290,7 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
         drainingInstances = {}
         drainingContainerDescribed = []
     emptyInstances = empty_instances(cluster, activeContainerDescribed)
+    disconnectedInstances = disconnected_instances(activeContainerDescribed)
 
     dataObj = {
         'clusterName': clusterName,
@@ -231,6 +299,7 @@ def retrieve_cluster_data(ecsClient, cwClient, asgClient, cluster):
         'activeContainerDescribed': activeContainerDescribed,
         'drainingInstances': drainingInstances,
         'emptyInstances': emptyInstances,
+        'disconnectedInstances': disconnectedInstances,
         'drainingContainerDescribed': drainingContainerDescribed
     }
 
@@ -250,6 +319,7 @@ def main(run='normal'):
     ecsClient = boto3.client('ecs')
     cwClient = boto3.client('cloudwatch')
     asgClient = boto3.client('autoscaling')
+    ec2Client = boto3.client('ec2')
     asgData = asgClient.describe_auto_scaling_groups()
     clusterList = clusters(ecsClient)
 
@@ -265,7 +335,35 @@ def main(run='normal'):
             activeContainerDescribed = clusterData['activeContainerDescribed']
             drainingInstances = clusterData['drainingInstances']
             emptyInstances = clusterData['emptyInstances']
-            ########## Cluster scaling rules ###########
+            disconnectedInstances = clusterData['disconnectedInstances']
+            # Agent health check (runs regardless of ASG min-state -
+            # a stuck instance on a min-sized cluster is the case
+            ########## that most needs replacing) ###########
+
+        for instanceId in disconnectedInstances:
+            disconnectSince = get_disconnect_since(ec2Client, instanceId)
+            if disconnectSince is None:
+                mark_disconnected(ec2Client, instanceId)
+                print('{}: agent disconnected, starting grace timer'.format(instanceId))
+            else:
+                elapsedMinutes = (datetime.datetime.utcnow() - disconnectSince).total_seconds() / 60
+                if elapsedMinutes >= float(AGENT_DISCONNECT_GRACE_MINUTES):
+                    if run == 'dry':
+                        print('Would have terminated disconnected-agent instance {} (disconnected {:.0f}m)'.format(
+                            instanceId, elapsedMinutes))
+                    else:
+                        print('Terminating instance with disconnected agent {} (disconnected {:.0f}m)'.format(
+                            instanceId, elapsedMinutes))
+                        terminate_replace(instanceId, asgClient)
+                else:
+                    print('{}: agent disconnected for {:.0f}m, within grace period'.format(
+                        instanceId, elapsedMinutes))
+
+        for inst in activeContainerDescribed['containerInstances']:
+            if inst['agentConnected'] and get_disconnect_since(ec2Client, inst['ec2InstanceId']):
+                clear_disconnect_tag(ec2Client, inst['ec2InstanceId'])
+
+        ########## Cluster scaling rules ###########
 
         if asg_on_min_state(clusterName, asgData, asgClient):
             print('{}: in Minimum state, skipping'.format(clusterName))
